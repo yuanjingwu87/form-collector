@@ -1,0 +1,4 @@
+node_modules/
+form_collector.db
+data/
+.git
