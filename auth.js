@@ -1,5 +1,5 @@
 const jwt = require('jsonwebtoken');
-const { db, addAuditLog } = require('./db');
+const { client, addAuditLog } = require('./db');
 
 const JWT_SECRET = process.env.JWT_SECRET || 'form-collector-secret-key-2024';
 const JWT_EXPIRES_IN = '24h';
@@ -22,12 +22,9 @@ function authenticateToken(req, res, next) {
   });
 }
 
-// 验证角色权限中间件
+// 角色验证中间件
 function requireRole(...roles) {
   return (req, res, next) => {
-    if (!req.user) {
-      return res.status(401).json({ error: '未认证' });
-    }
     if (!roles.includes(req.user.role)) {
       return res.status(403).json({ error: '权限不足' });
     }
@@ -36,54 +33,45 @@ function requireRole(...roles) {
 }
 
 // 登录
-function login(username, password, ip) {
-  const user = db.prepare(`
-    SELECT u.*, un.name as unit_name 
-    FROM users u 
-    LEFT JOIN units un ON u.unit_id = un.id 
-    WHERE u.username = ?
-  `).get(username);
+async function login(username, password, ip) {
+  const result = await client.execute({
+    sql: 'SELECT * FROM users WHERE username = ?',
+    args: [username]
+  });
+  const user = result.rows[0];
 
   if (!user) {
     return { success: false, message: '用户名或密码错误' };
   }
 
-  const validPassword = require('bcryptjs').compareSync(password, user.password_hash);
-  if (!validPassword) {
+  const bcrypt = require('bcryptjs');
+  const valid = bcrypt.compareSync(password, user.password_hash);
+  if (!valid) {
     return { success: false, message: '用户名或密码错误' };
   }
 
   const token = jwt.sign(
-    { id: user.id, username: user.username, role: user.role, realName: user.real_name },
+    { id: user.id, username: user.username, realName: user.real_name, role: user.role, unitId: user.unit_id },
     JWT_SECRET,
     { expiresIn: JWT_EXPIRES_IN }
   );
 
-  // 记录登录日志
-  addAuditLog(user.id, '登录', `用户 ${user.real_name} 登录系统`, ip);
+  await addAuditLog(user.id, '登录', `用户 ${user.real_name} 登录系统`, ip);
 
   return {
     success: true,
     token,
-    user: {
-      id: user.id,
-      username: user.username,
-      realName: user.real_name,
-      role: user.role,
-      unitId: user.unit_id,
-      unitName: user.unit_name
-    }
+    user: { id: user.id, username: user.username, realName: user.real_name, role: user.role, unitId: user.unit_id }
   };
 }
 
-// 获取当前用户信息
-function getCurrentUser(userId) {
-  return db.prepare(`
-    SELECT u.*, un.name as unit_name 
-    FROM users u 
-    LEFT JOIN units un ON u.unit_id = un.id 
-    WHERE u.id = ?
-  `).get(userId);
+// 获取当前用户
+async function getCurrentUser(userId) {
+  const result = await client.execute({
+    sql: 'SELECT * FROM users WHERE id = ?',
+    args: [userId]
+  });
+  return result.rows[0];
 }
 
-module.exports = { authenticateToken, requireRole, login, getCurrentUser, JWT_SECRET };
+module.exports = { authenticateToken, requireRole, login, getCurrentUser };
